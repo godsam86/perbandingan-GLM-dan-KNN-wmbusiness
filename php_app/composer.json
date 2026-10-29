@@ -1,0 +1,12 @@
+{
+  "name": "wm99/php-app",
+  "description": "Sistem Prediksi Tren Penjualan WMBusiness99 Medan",
+  "type": "project",
+  "require": {
+    "php": ">=7.4",
+    "dompdf/dompdf": "^2.0"
+  },
+  "config": {
+    "optimize-autoloader": true
+  }
+}
