@@ -1,10 +1,9 @@
 <?php
 /**
- * Halaman Input Dataset (Gambar 5.3)
- * - Unggah CSV/XLSX via Python /api/parse-upload
- * - Tambah manual satu transaksi
- * - Pratinjau data hasil parse
- * - Simpan ke tb_produk + tb_transaksi
+ * Halaman Input Dataset (Gambar 5.3).
+ * Saat "Simpan ke Database": HAPUS transaksi + riset lama, lalu insert baru.
+ *
+ * CATATAN: ALTER TABLE berada di LUAR transaksi karena menyebabkan implicit commit.
  */
 require_once __DIR__ . '/../src/config.php';
 require_once __DIR__ . '/../src/Db.php';
@@ -19,14 +18,9 @@ $error   = '';
 $success = '';
 $info    = '';
 
-// Ambil pratinjau dari session
 $preview          = $_SESSION['parsed_rows'] ?? [];
 $preview_filename = $_SESSION['parsed_filename'] ?? '';
-$preview_size     = $_SESSION['parsed_size'] ?? 0;
 
-// ============================================================
-// PROSES POST
-// ============================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!csrf_verify($_POST['csrf_token'] ?? '')) {
         $error = 'Sesi tidak valid. Muat ulang halaman.';
@@ -58,10 +52,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     } else {
                         $_SESSION['parsed_rows']     = $result['rows'];
                         $_SESSION['parsed_filename'] = $result['filename'];
-                        $_SESSION['parsed_size']     = $size;
                         $preview          = $result['rows'];
                         $preview_filename = $result['filename'];
-                        $preview_size     = $size;
                         $success = 'Berkas berhasil diproses: '
                                  . number_format($result['n_baris'], 0, ',', '.')
                                  . ' baris siap disimpan.';
@@ -110,9 +102,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $error = 'Tidak ada data untuk disimpan.';
             } else {
                 try {
+                    // ============================================================
+                    // LANGKAH 0: Reset AUTO_INCREMENT — DI LUAR TRANSAKSI
+                    // ALTER TABLE menyebabkan implicit commit di MySQL/MariaDB.
+                    // Kalau dijalankan di dalam transaksi, transaksi otomatis
+                    // di-commit dan PDO::commit() berikutnya akan error:
+                    // "There is no active transaction".
+                    // ============================================================
+                    Db::execute('ALTER TABLE tb_hasil_prediksi AUTO_INCREMENT = 1');
+                    Db::execute('ALTER TABLE tb_transaksi AUTO_INCREMENT = 1');
+                    Db::execute('ALTER TABLE tb_evaluasi AUTO_INCREMENT = 1');
+                    Db::execute('ALTER TABLE tb_koefisien_glm AUTO_INCREMENT = 1');
+                    Db::execute('ALTER TABLE tb_riset AUTO_INCREMENT = 1');
+
+                    // ============================================================
+                    // LANGKAH 1: Mulai transaksi untuk DELETE + INSERT
+                    // ============================================================
                     $pdo = Db::conn();
                     $pdo->beginTransaction();
 
+                    // Hapus data lama
+                    Db::execute('DELETE FROM tb_hasil_prediksi');
+                    Db::execute('DELETE FROM tb_transaksi');
+                    Db::execute('DELETE FROM tb_evaluasi');
+                    Db::execute('DELETE FROM tb_koefisien_glm');
+                    Db::execute('DELETE FROM tb_riset');
+
+                    // Hapus cache session
+                    unset($_SESSION['dashboard_summary_cache']);
+                    unset($_SESSION['dashboard_summary_cache_time']);
+                    unset($_SESSION['summary_cache']);
+                    unset($_SESSION['summary_cache_time']);
+                    unset($_SESSION['latest_cache']);
+                    unset($_SESSION['latest_cache_time']);
+                    unset($_SESSION['glm_result'], $_SESSION['glm_skenario'], $_SESSION['glm_produk']);
+                    unset($_SESSION['knn_result'], $_SESSION['knn_skenario'], $_SESSION['knn_k_pilihan']);
+                    unset($_SESSION['last_preprocess']);
+
+                    // ============================================================
+                    // LANGKAH 2: Insert data baru
+                    // ============================================================
                     $n_produk_baru = 0;
                     $n_transaksi   = 0;
                     $produk_by_id  = [];
@@ -180,13 +209,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     $pdo->commit();
                     log_activity('Simpan Dataset',
-                        "Produk baru: $n_produk_baru, Transaksi baru: $n_transaksi");
+                        "Produk baru: $n_produk_baru, Transaksi baru: $n_transaksi (data lama dihapus)");
 
-                    unset($_SESSION['parsed_rows'], $_SESSION['parsed_filename'], $_SESSION['parsed_size']);
+                    unset($_SESSION['parsed_rows'], $_SESSION['parsed_filename']);
                     $preview = [];
                     $preview_filename = '';
-                    $preview_size = 0;
-                    $success = "Berhasil menyimpan $n_transaksi transaksi dan $n_produk_baru produk baru ke database.";
+                    $success = "Berhasil menyimpan $n_transaksi transaksi dan $n_produk_baru produk baru. "
+                             . "Data lama telah dihapus. Silakan buka Dashboard untuk melihat hasil.";
                 } catch (Exception $e) {
                     if (Db::conn()->inTransaction()) Db::conn()->rollBack();
                     $error = 'Gagal menyimpan: ' . $e->getMessage();
@@ -196,20 +225,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         // ---- Aksi 4: Bersihkan pratinjau ----
         elseif ($action === 'clear') {
-            unset($_SESSION['parsed_rows'], $_SESSION['parsed_filename'], $_SESSION['parsed_size']);
+            unset($_SESSION['parsed_rows'], $_SESSION['parsed_filename']);
             $preview = [];
             $preview_filename = '';
-            $preview_size = 0;
             $info = 'Pratinjau dibersihkan.';
         }
     }
 }
 
-// Statistik DB
 $total_produk_db    = (int) Db::fetchScalar('SELECT COUNT(*) FROM tb_produk');
 $total_transaksi_db = (int) Db::fetchScalar('SELECT COUNT(*) FROM tb_transaksi');
 
-// Data contoh untuk pratinjau (dari database)
 $contoh_data = [];
 if ($total_transaksi_db > 0) {
     $contoh_data = Db::fetchAll(
@@ -225,8 +251,7 @@ if ($total_transaksi_db > 0) {
                 t.jumlah_terjual, t.harga_satuan
          FROM tb_transaksi t
          JOIN tb_produk p ON p.id_produk = t.id_produk
-         ORDER BY t.tanggal_transaksi DESC, t.id_transaksi DESC
-         LIMIT 1"
+         ORDER BY t.tanggal_transaksi DESC, t.id_transaksi DESC LIMIT 1"
     );
     if ($last) $contoh_data[] = $last;
 }
@@ -240,11 +265,11 @@ require __DIR__ . '/../src/layout/top.php';
 <?php if ($success): ?><div class="alert alert-success mb-3"><?= e($success) ?></div><?php endif; ?>
 <?php if ($info): ?><div class="alert alert-info mb-3"><?= e($info) ?></div><?php endif; ?>
 
-<!-- ============ KARTU UNGGAH ============ -->
 <div class="card mb-3">
   <div class="card-title" style="margin-bottom:2px;">Unggah Data Historis</div>
   <div style="font-size:11px; color:var(--text-muted); margin-bottom:14px;">
-    Unggah file CSV atau Excel, atau tambahkan data transaksi secara manual
+    Unggah file CSV atau Excel, atau tambahkan data transaksi secara manual.
+    <strong style="color:#B45309;">Data lama akan otomatis dihapus saat simpan.</strong>
   </div>
 
   <form method="post" enctype="multipart/form-data" id="form-upload">
@@ -294,7 +319,6 @@ require __DIR__ . '/../src/layout/top.php';
   </form>
 </div>
 
-<!-- ============ KARTU PRATINJAU ============ -->
 <div class="card">
   <div class="card-title" style="margin-bottom:2px;">Pratinjau Data Transaksi</div>
   <div style="font-size:11px; color:var(--text-muted); margin-bottom:14px;">
@@ -323,9 +347,7 @@ require __DIR__ . '/../src/layout/top.php';
         <tbody>
           <?php foreach ($contoh_data as $i => $row): ?>
             <?php if ($i === 5): ?>
-              <tr>
-                <td colspan="6" style="text-align:center; color:#94A3B8; font-size:11px;">. . .</td>
-              </tr>
+              <tr><td colspan="6" style="text-align:center; color:#94A3B8; font-size:11px;">. . .</td></tr>
             <?php endif; ?>
             <tr>
               <td><?= ($i === 5) ? number_format($total_transaksi_db, 0, ',', '.') : ($i + 1) ?></td>
@@ -340,7 +362,7 @@ require __DIR__ . '/../src/layout/top.php';
       </table>
     </div>
     <div style="font-size:11px; color:var(--text-muted); margin-top:8px;">
-      Menampilkan contoh data dari <?= number_format($total_transaksi_db, 0, ',', '.') ?> record
+      Menampilkan contoh data dari <?= number_format($total_transaksi_db, 0, ',', '.') ?> record.
     </div>
   <?php endif; ?>
 
@@ -350,26 +372,17 @@ require __DIR__ . '/../src/layout/top.php';
         <div style="font-size:12px; font-weight:600;">
           Pratinjau data baru (<?= count($preview) ?> baris)
           <?php if ($preview_filename): ?>
-            <span style="font-weight:400; color:var(--text-muted);">
-              · <?= e($preview_filename) ?>
-            </span>
+            <span style="font-weight:400; color:var(--text-muted);">· <?= e($preview_filename) ?></span>
           <?php endif; ?>
         </div>
-        <div style="font-size:11px; color:var(--text-muted);">
-          Menunggu disimpan ke database
-        </div>
       </div>
-
       <div style="overflow-x:auto; max-height:400px; overflow-y:auto;">
         <table class="table-clean">
           <thead>
             <tr>
-              <th>NO</th>
-              <th>TANGGAL</th>
-              <th>NAMA PRODUK</th>
+              <th>NO</th><th>TANGGAL</th><th>NAMA PRODUK</th>
               <th style="text-align:right;">JUMLAH TERJUAL</th>
-              <th style="text-align:right;">HARGA (RP)</th>
-              <th>KATEGORI</th>
+              <th style="text-align:right;">HARGA (RP)</th><th>KATEGORI</th>
             </tr>
           </thead>
           <tbody>
@@ -387,17 +400,20 @@ require __DIR__ . '/../src/layout/top.php';
         </table>
       </div>
 
-      <!-- ======== TOMBOL AKSI ======== -->
+      <div class="alert alert-warning mt-3 mb-0" style="font-size:12px;">
+        <strong>⚠ Perhatian:</strong> Menyimpan akan <strong>menghapus semua transaksi lama</strong> dan
+        semua riwayat riset. Pastikan data baru sudah benar.
+      </div>
+
       <div class="d-flex justify-content-end gap-2 mt-3">
         <form method="post" style="display:inline;">
           <?= csrf_field() ?>
           <input type="hidden" name="action" value="clear">
           <button type="submit" class="btn btn-outline"
-                  style="padding:10px 20px; font-size:13px;">
-            Bersihkan
-          </button>
+                  style="padding:10px 20px; font-size:13px;">Bersihkan</button>
         </form>
-        <form method="post" style="display:inline;">
+        <form method="post" style="display:inline;"
+              onsubmit="return confirm('Simpan data baru? Data lama (transaksi + riset) akan dihapus.');">
           <?= csrf_field() ?>
           <input type="hidden" name="action" value="save_db">
           <button type="submit" class="btn btn-primary"
@@ -410,7 +426,6 @@ require __DIR__ . '/../src/layout/top.php';
   <?php endif; ?>
 </div>
 
-<!-- ============ MODAL TAMBAH MANUAL ============ -->
 <div class="modal fade" id="modalManual" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog">
     <div class="modal-content">

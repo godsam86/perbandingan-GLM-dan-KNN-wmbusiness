@@ -1,62 +1,51 @@
 <?php
 /**
- * Halaman Hasil Prediksi (Gambar 5.8)
+ * Halaman Hasil Prediksi (Gambar 5.8).
+ * Baca dari tb_riset (latest terakhir).
  */
 require_once __DIR__ . '/../src/config.php';
 require_once __DIR__ . '/../src/Db.php';
 require_once __DIR__ . '/../src/Auth.php';
 require_once __DIR__ . '/../src/MlClient.php';
 require_once __DIR__ . '/../src/helpers.php';
+require_once __DIR__ . '/../src/Riset.php';
 
 Auth::requireLogin();
 $user = Auth::user();
 
 $error = '';
-
 $total_labeled = (int) Db::fetchScalar("SELECT COUNT(*) FROM tb_transaksi WHERE label_tren IS NOT NULL");
 $latest = null;
 
-if ($total_labeled >= 5) {
-    $cache_key      = 'latest_cache';
-    $cache_time_key = 'latest_cache_time';
+// Baca latest dari tb_riset
+$latest = Riset::getLatest();
 
-    if (!empty($_SESSION[$cache_key]) && !empty($_SESSION[$cache_time_key])
-        && (time() - $_SESSION[$cache_time_key]) < 300) {
-        $latest = $_SESSION[$cache_key];
+// Kalau belum ada dan data cukup, panggil Python sekali
+if (!$latest && $total_labeled >= 5) {
+    $rows = Db::fetchAll(
+        "SELECT t.id_transaksi AS id, t.tanggal_transaksi AS tanggal,
+                p.nama_produk AS produk, p.kategori AS kategori,
+                t.jumlah_terjual AS jumlah, t.harga_satuan AS harga,
+                t.label_tren AS label
+         FROM tb_transaksi t
+         JOIN tb_produk p ON p.id_produk = t.id_produk
+         WHERE t.label_tren IS NOT NULL
+         ORDER BY t.tanggal_transaksi ASC, t.id_transaksi ASC"
+    );
+
+    $client = new MlClient();
+    $latest = $client->latest($rows);
+
+    if (!empty($latest['ok'])) {
+        Riset::simpanLatest($latest);
     } else {
-        $rows = Db::fetchAll(
-            "SELECT t.id_transaksi AS id,
-                    t.tanggal_transaksi AS tanggal,
-                    p.nama_produk AS produk,
-                    p.kategori AS kategori,
-                    t.jumlah_terjual AS jumlah,
-                    t.harga_satuan AS harga,
-                    t.label_tren AS label
-             FROM tb_transaksi t
-             JOIN tb_produk p ON p.id_produk = t.id_produk
-             WHERE t.label_tren IS NOT NULL
-             ORDER BY t.tanggal_transaksi ASC, t.id_transaksi ASC"
-        );
-
-        $client = new MlClient();
-        $latest = $client->latest($rows);
-
-        if (!empty($latest['ok'])) {
-            $_SESSION[$cache_key] = $latest;
-            $_SESSION[$cache_time_key] = time();
-        } else {
-            $error = $latest['error'] ?? 'Gagal mengambil hasil prediksi.';
-            if (strpos($error, 'ML') !== false) {
-                $_SESSION['ml_down'] = true;
-            }
-            $latest = null;
-        }
+        $error = $latest['error'] ?? 'Gagal mengambil hasil prediksi.';
+        if (strpos($error, 'ML') !== false) $_SESSION['ml_down'] = true;
+        $latest = null;
     }
 }
 
-// Hitung jumlah naik/turun (untuk info, tidak ditampilkan di header)
-$n_naik = 0;
-$n_turun = 0;
+$n_naik = 0; $n_turun = 0;
 if ($latest && !empty($latest['items'])) {
     foreach ($latest['items'] as $it) {
         if ($it['tren'] === 'Naik') $n_naik++;
@@ -72,8 +61,6 @@ require __DIR__ . '/../src/layout/top.php';
 <?php if ($error): ?><div class="alert alert-danger mb-3"><?= e($error) ?></div><?php endif; ?>
 
 <?php if ($latest && !empty($latest['items'])): ?>
-
-  <!-- ============ HEADER MODEL TERBAIK + TOMBOL EKSPOR ============ -->
   <div class="card mb-3" style="padding:14px 20px;">
     <div class="d-flex justify-content-between align-items-center flex-wrap gap-3">
       <div class="d-flex align-items-center gap-3">
@@ -92,14 +79,11 @@ require __DIR__ . '/../src/layout/top.php';
         </div>
       </div>
       <div>
-        <a href="export_csv.php" class="btn btn-primary" target="_blank">
-          ⬇ Ekspor CSV
-        </a>
+        <a href="export_csv.php" class="btn btn-primary" target="_blank">⬇ Ekspor CSV</a>
       </div>
     </div>
   </div>
 
-  <!-- ============ TABEL REKAPITULASI ============ -->
   <div class="card mb-3">
     <div class="card-title" style="margin-bottom:12px;">Rekapitulasi Prediksi Tren per Produk</div>
     <table class="table-clean">
@@ -145,42 +129,29 @@ require __DIR__ . '/../src/layout/top.php';
     </table>
   </div>
 
-  <!-- ============ KETERANGAN REKOMENDASI ============ -->
   <div class="card">
     <div class="card-title">Keterangan Rekomendasi</div>
     <div class="row g-3">
       <div class="col-md-6">
         <div class="d-flex align-items-start gap-2">
           <span class="badge-tren badge-naik" style="flex-shrink:0;">Naik</span>
-          <div style="font-size:13px;">
-            Tambah stok atau pertahankan ketersediaan produk
-          </div>
+          <div style="font-size:13px;">Tambah stok atau pertahankan ketersediaan produk</div>
         </div>
       </div>
       <div class="col-md-6">
         <div class="d-flex align-items-start gap-2">
           <span class="badge-tren badge-turun" style="flex-shrink:0;">Turun</span>
-          <div style="font-size:13px;">
-            Tahan pembelian stok baru dan kurangi persediaan
-          </div>
+          <div style="font-size:13px;">Tahan pembelian stok baru dan kurangi persediaan</div>
         </div>
       </div>
     </div>
   </div>
-
 <?php elseif ($total_labeled >= 5): ?>
-  <div class="card">
-    <div class="alert alert-info mb-0">
-      Gagal mengambil hasil prediksi. Pastikan layanan ML aktif
-      (jalankan <code>python app.py</code>).
-    </div>
-  </div>
+  <div class="card"><div class="alert alert-info mb-0">
+    Gagal mengambil hasil prediksi. Pastikan layanan ML aktif.</div></div>
 <?php else: ?>
-  <div class="card">
-    <div class="alert alert-info mb-0">
-      Belum cukup data berlabel. Unggah dataset dan jalankan praproses terlebih dahulu.
-    </div>
-  </div>
+  <div class="card"><div class="alert alert-info mb-0">
+    Belum cukup data berlabel. Unggah dataset dan jalankan praproses terlebih dahulu.</div></div>
 <?php endif; ?>
 
 <?php require __DIR__ . '/../src/layout/bottom.php'; ?>

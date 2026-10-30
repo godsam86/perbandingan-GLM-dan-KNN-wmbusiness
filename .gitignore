@@ -1,0 +1,26 @@
+# Node.js
+node_modules/
+npm-debug.log*
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Composer
+vendor/
+
+# Environment dan rahasia
+.env
+.env.*
+!.env.example
+
+# Cache
+.cache/
+*.log
+
+# Editor
+.vscode/
+.idea/

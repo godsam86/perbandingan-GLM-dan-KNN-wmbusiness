@@ -13,6 +13,7 @@ $menu = [
     'perbandingan' => ['label' => 'Perbandingan Model', 'href' => 'perbandingan.php', 'icon' => '⇄'],
     'hasil'        => ['label' => 'Hasil Prediksi',     'href' => 'hasil.php',        'icon' => '✓'],
     'rekomendasi'  => ['label' => 'Rekomendasi Bisnis', 'href' => 'rekomendasi.php',  'icon' => '★'],
+    'riset'        => ['label' => 'Riwayat Riset',      'href' => 'riset.php',        'icon' => '📚'],
 ];
 ?><!DOCTYPE html>
 <html lang="id">
